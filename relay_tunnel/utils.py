@@ -1,0 +1,432 @@
+# -*- coding: utf-8 -*-
+
+"""Miscellaneous utility functions and classes
+"""
+
+import asyncio
+import random
+import struct
+
+import turbo_tunnel
+
+
+class RelayPacketError(RuntimeError):
+    pass
+
+
+class StreamStatusError(RuntimeError):
+    pass
+
+
+class StreamClosedError(RuntimeError):
+    pass
+
+
+class EnumStreamEvent(object):
+    OPEN = b"OPEN"
+    OKAY = b"OKAY"
+    FAIL = b"FAIL"
+    WRITE = b"WRTE"
+    CLOSE = b"CLSE"
+
+
+class EnumStreamStatus(object):
+    UNINITIALIZED = 0
+    OPENING = 1
+    ESTABLISHED = 2
+    CLOSING = 3
+    CLOSED = 4
+
+
+class RelayPacket(object):
+    def __init__(self, sender, receiver, body):
+        self._sender = sender if isinstance(sender, bytes) else sender.encode()
+        if len(self._sender) > 255:
+            raise RuntimeError("Sender is too long")
+        self._receiver = receiver if isinstance(receiver, bytes) else receiver.encode()
+        if len(self._receiver) > 255:
+            raise RuntimeError("Receiver is too long")
+        assert isinstance(body, bytes)
+        self._body = body
+
+    @property
+    def sender(self):
+        return self._sender.decode()
+
+    @property
+    def receiver(self):
+        return self._receiver.decode()
+
+    @property
+    def body(self):
+        return self._body
+
+    def serialize(self):
+        total_size = (
+            4 + 1 + len(self._sender) + 1 + len(self._receiver) + len(self._body)
+        )
+        buffer = struct.pack("!I", total_size)
+        buffer += struct.pack("B", len(self._sender)) + self._sender
+        buffer += struct.pack("B", len(self._receiver)) + self._receiver
+        buffer += self._body
+        return buffer
+
+    @staticmethod
+    def parse(buffer):
+        assert isinstance(buffer, bytes)
+        if len(buffer) < 4:
+            return None, buffer
+        total_size = struct.unpack("!I", buffer[:4])[0]
+        if len(buffer) < total_size:
+            return None, buffer
+        offset = 4
+        sender_size = struct.unpack("B", buffer[offset : offset + 1])[0]
+        offset += 1
+        sender = buffer[offset : offset + sender_size]
+        offset += sender_size
+        receiver_size = struct.unpack("B", buffer[offset : offset + 1])[0]
+        offset += 1
+        receiver = buffer[offset : offset + receiver_size]
+        offset += receiver_size
+        body = buffer[offset:total_size]
+        buffer = buffer[total_size:]
+        return RelayPacket(sender, receiver, body), buffer
+
+
+class StreamPacket(object):
+    def __init__(self, stream_id, event, **kwargs):
+        self._stream_id = stream_id
+        self._event = event
+        self._params = kwargs
+
+    @property
+    def stream_id(self):
+        return self._stream_id
+
+    @property
+    def event(self):
+        return self._event
+
+    def __getattr__(self, attr):
+        if attr in self._params:
+            return self._params[attr]
+        raise AttributeError(attr)
+
+    def serialize(self):
+        buffer = struct.pack("!I", self._stream_id)
+        buffer += self._event
+        if self._event == EnumStreamEvent.OPEN:
+            target_addr = self._params["addr"]
+            if not isinstance(target_addr, bytes):
+                target_addr = target_addr.encode()
+            target_port = self._params["port"]
+            buffer += struct.pack("B", len(target_addr))
+            buffer += target_addr[:255]
+            buffer += struct.pack("!H", target_port)
+        elif self._event == EnumStreamEvent.OKAY:
+            pass
+        elif self._event == EnumStreamEvent.FAIL:
+            pass
+        elif self._event == EnumStreamEvent.WRITE:
+            data = self._params["data"]
+            buffer += data
+        elif self._event == EnumStreamEvent.CLOSE:
+            pass
+        else:
+            raise NotImplementedError(self._event)
+        return buffer
+
+    @staticmethod
+    def parse(buffer):
+        assert isinstance(buffer, bytes)
+        if len(buffer) < 8:
+            return None, buffer
+        stream_id = struct.unpack("!I", buffer[:4])[0]
+        event = buffer[4:8]
+        params = {}
+        if event == EnumStreamEvent.OPEN:
+            target_addr_size = buffer[8]
+            params["addr"] = buffer[9 : 9 + target_addr_size]
+            params["port"] = struct.unpack("!H", buffer[9 + target_addr_size :])[0]
+        elif event == EnumStreamEvent.OKAY:
+            pass
+        elif event == EnumStreamEvent.FAIL:
+            pass
+        elif event == EnumStreamEvent.WRITE:
+            params["data"] = buffer[8:]
+        elif event == EnumStreamEvent.CLOSE:
+            pass
+        else:
+            raise NotImplementedError(event)
+        return StreamPacket(stream_id, event, **params)
+
+
+class RelayTransport(object):
+    def __init__(self, tunnel, local_id, remote_id=None):
+        self._tunnel = tunnel
+        self._local_id = local_id
+        self._remote_id = remote_id
+        self._streams = {}
+        self._last_stream_id = 0
+        self._read_event = asyncio.Event()
+        asyncio.ensure_future(self.reading_packet_task())
+
+    @property
+    def streams(self):
+        return list(self._streams.values())
+
+    def closed(self):
+        return self._tunnel.closed()
+
+    # async def get_readable_streams(self):
+    #     await self._read_event.wait()
+    #     self._read_event.clear()
+    #     return [stream for stream in self.streams if stream.readable]
+
+    async def create_stream(self, address):
+        self._last_stream_id += 1
+        stream = RelayStream(self, self._last_stream_id)
+        self._streams[self._last_stream_id] = stream
+        if await stream.connect(address):
+            return stream
+        self._streams[self._last_stream_id] = None
+        return None
+
+    async def send_packet(self, stream_packet, remote_id=None):
+        remote_id = remote_id or self._remote_id
+        assert(remote_id is not None)
+        relay_packet = RelayPacket(self._local_id, remote_id, stream_packet.serialize())
+        await self._tunnel.write(relay_packet.serialize())
+
+    async def read_from_tunnel(self):
+        return await self._tunnel.read()
+
+    async def reading_packet_task(self):
+        buffer = b""
+        while True:
+            try:
+                buffer += await self.read_from_tunnel()
+            except turbo_tunnel.utils.TunnelClosedError:
+                assert(self.closed())
+                turbo_tunnel.utils.logger.warn(
+                    "[%s] Relay server %s exit"
+                    % (self.__class__.__name__, self._tunnel)
+                )
+                break
+
+            while buffer:
+                prev_buffer = buffer
+                relay_packet, buffer = RelayPacket.parse(buffer)
+                if not relay_packet:
+                    break
+
+                assert self._remote_id is None or relay_packet.sender == self._remote_id
+                assert relay_packet.receiver == self._local_id
+                stream_packet = StreamPacket.parse(relay_packet.body)
+                stream_id = stream_packet.stream_id
+                if stream_id not in self._streams:
+                    self._streams[stream_id] = RelayStream(
+                        self, stream_id, remote_id=relay_packet.sender
+                    )
+                    turbo_tunnel.utils.logger.info(
+                        "[%s] New stream %s received"
+                        % (self.__class__.__name__, stream_id)
+                    )
+                if not await self._streams[stream_id].on_recv_packet(stream_packet):
+                    turbo_tunnel.utils.logger.warn(
+                        "[%s][%s][%s] Handle event %s failed, retry later"
+                        % (
+                            self.__class__.__name__,
+                            relay_packet.sender,
+                            stream_packet.stream_id,
+                            stream_packet.event.decode(),
+                        )
+                    )
+                    await asyncio.sleep(0.001)
+                    buffer = prev_buffer
+                else:
+                    self._read_event.set()
+
+    def close(self):
+        for stream_id in self._streams:
+            self._streams[stream_id].close()
+        self._streams = {}
+
+
+class RelayStream(object):
+    def __init__(
+        self,
+        transport,
+        stream_id,
+        status=EnumStreamStatus.UNINITIALIZED,
+        remote_id=None,
+    ):
+        self._transport = transport
+        self._stream_id = stream_id
+        self._status = status
+        self._read_event = asyncio.Event()
+        self._buffer = b""
+        self._target_tunnel = None
+        self._remote_id = remote_id
+
+    @property
+    def readable(self):
+        return self._read_event.is_set()
+
+    @property
+    def target_tunnel(self):
+        return self._target_tunnel
+
+    async def on_recv_packet(self, packet):
+        event = packet.event
+        if event == EnumStreamEvent.OPEN:
+            print(self._status)
+            assert self._status == EnumStreamStatus.UNINITIALIZED
+            assert self._remote_id is not None
+            target_address = (packet.addr.decode(), packet.port)
+            source_address = (self._remote_id, 0)
+            tunn_conn, self._target_tunnel = await self.connect_server(
+                target_address, source_address
+            )
+            if self._target_tunnel:
+                self._status = EnumStreamStatus.ESTABLISHED
+                stream_packet = StreamPacket(self._stream_id, EnumStreamEvent.OKAY)
+                turbo_tunnel.utils.AsyncTaskManager().start_task(
+                    self.forward(tunn_conn)
+                )
+            else:
+                self._status = EnumStreamStatus.CLOSING
+                stream_packet = StreamPacket(self._stream_id, EnumStreamEvent.FAIL)
+            await self._transport.send_packet(stream_packet, self._remote_id)
+        elif event == EnumStreamEvent.OKAY:
+            if self._status == EnumStreamStatus.OPENING:
+                self._status = EnumStreamStatus.ESTABLISHED
+                self._read_event.set()
+        elif event == EnumStreamEvent.FAIL:
+            if self._status == EnumStreamStatus.OPENING:
+                self._status = EnumStreamStatus.CLOSED
+                self._read_event.set()
+        elif event == EnumStreamEvent.WRITE:
+            self._buffer += packet.data
+            self._read_event.set()
+        elif event == EnumStreamEvent.CLOSE:
+            if self._buffer:
+                return False
+            self._status = EnumStreamStatus.CLOSED
+            if self._target_tunnel:
+                turbo_tunnel.utils.logger.info(
+                    "[%s] Close tunnel %s"
+                    % (self.__class__.__name__, self._target_tunnel)
+                )
+                self._target_tunnel.close()
+                self._target_tunnel = None
+            self._read_event.set()
+        else:
+            raise NotImplementedError(event)
+        return True
+
+    async def connect(self, address):
+        stream_packet = StreamPacket(
+            self._stream_id, EnumStreamEvent.OPEN, addr=address[0], port=address[1]
+        )
+        await self._transport.send_packet(stream_packet)
+        self._status = EnumStreamStatus.OPENING
+        await self._read_event.wait()
+        self._read_event.clear()
+        if self._status == EnumStreamStatus.ESTABLISHED:
+            return True
+        elif self._status == EnumStreamStatus.CLOSED:
+            return False
+        else:
+            raise StreamStatusError(self._status)
+
+    async def read(self):
+        await self._read_event.wait()
+        self._read_event.clear()
+        if not self._buffer:
+            raise StreamClosedError()
+        buffer, self._buffer = self._buffer, b""
+        return buffer
+
+    async def write(self, buffer, remote_id=None):
+        stream_packet = StreamPacket(
+            self._stream_id, EnumStreamEvent.WRITE, data=buffer
+        )
+        await self._transport.send_packet(stream_packet, remote_id)
+
+    def close(self):
+        stream_packet = StreamPacket(self._stream_id, EnumStreamEvent.CLOSE)
+        asyncio.ensure_future(
+            self._transport.send_packet(stream_packet, self._remote_id)
+        )
+        self._status = EnumStreamStatus.CLOSED
+
+    async def connect_server(self, target_address, source_address):
+        """Connect target server"""
+        tun_conn = turbo_tunnel.server.TunnelConnection(
+            source_address, target_address, None
+        )
+        tunnel_chain = turbo_tunnel.chain.TunnelChain(
+            [turbo_tunnel.utils.Url("tcp://")]
+        )
+        try:
+            await tunnel_chain.create_tunnel(target_address)
+        except turbo_tunnel.utils.TunnelError as e:
+            turbo_tunnel.utils.logger.warn(
+                "[%s] Connect %s:%d failed: %s"
+                % (
+                    self.__class__.__name__,
+                    target_address[0],
+                    target_address[1],
+                    e,
+                )
+            )
+            tun_conn.on_downstream_closed()
+            return tun_conn, None
+        else:
+            return tun_conn, tunnel_chain.tail
+
+    async def forward(self, tunn_conn):
+        if not self._target_tunnel:
+            raise RuntimeError("Target server is not connected")
+
+        async def _forward_to_upstream():
+            while True:
+                try:
+                    buffer = await self.read()
+                except StreamClosedError:
+                    tunn_conn.on_downstream_closed()
+                    if self._target_tunnel:
+                        self._target_tunnel.close()
+                    break
+                tunn_conn.on_data_sent(buffer)
+                await self._target_tunnel.write(buffer)
+
+        async def _forward_to_downstream():
+            assert self._remote_id is not None
+            while True:
+                try:
+                    buffer = await self._target_tunnel.read()
+                except turbo_tunnel.utils.TunnelClosedError:
+                    tunn_conn.on_upstream_closed()
+                    self.close()
+                    break
+                tunn_conn.on_data_recevied(buffer)
+                await self.write(buffer, self._remote_id)
+
+        tasks = [
+            turbo_tunnel.utils.AsyncTaskManager().wrap_task(_forward_to_upstream()),
+            turbo_tunnel.utils.AsyncTaskManager().wrap_task(_forward_to_downstream()),
+        ]
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        tunn_conn.on_close()
+
+
+def create_random_string(length=32, exclude=None):
+    result = ""
+    while len(result) < length:
+        c = chr(random.randint(48, 122))
+        if exclude and c in exclude:
+            continue
+        result += c
+    return result
