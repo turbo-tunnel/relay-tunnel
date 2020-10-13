@@ -21,6 +21,7 @@ class WebSocketRelayTunnel(turbo_tunnel.tunnel.Tunnel):
     def __init__(self, tunnel, url, address=None):
         target_id = url.params.get("target_id")
         client_id = url.params.get("client_id")
+        token = url.params.get("token")
         url = copy.copy(url)
         url.protocol = url.protocol.replace("+relay", "")
         if not client_id:
@@ -34,7 +35,9 @@ class WebSocketRelayTunnel(turbo_tunnel.tunnel.Tunnel):
             self._relay_transport = self.__class__.transports[str(url)]
             self._connected = True
         else:
-            self._relay_transport = utils.RelayTransport(self._tunnel, client_id, target_id)
+            self._relay_transport = utils.RelayTransport(
+                self._tunnel, client_id, target_id, token
+            )
             self.__class__.transports[str(url)] = self._relay_transport
             self._connected = False
         self._stream = None
@@ -80,6 +83,11 @@ class WebSocketRelayTunnel(turbo_tunnel.tunnel.Tunnel):
             self._stream.close()
             self._stream = None
 
+    async def wait_until_closed(self):
+        while not self._relay_transport.closed():
+            await asyncio.sleep(1)
+        self.__class__.transports.pop(str(self._url))
+
 
 class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
     """WebSocket Relay Tunnel Server"""
@@ -107,6 +115,27 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                     self.set_status(400, "Bad Request")
                     return False
                 self._client_id = client_id[0].decode()
+                auth_data = this._listen_url.auth
+                if auth_data:
+                    auth_data = auth_data.split(':')
+                    for header in self.request.headers:
+                        if header == "Proxy-Authorization":
+                            value = self.request.headers[header]
+                            auth_type, auth_value = value.split()
+                            if (
+                                auth_type == "Basic"
+                                and auth_value
+                                == turbo_tunnel.auth.http_basic_auth(*auth_data)
+                            ):
+                                break
+                        else:
+                            turbo_tunnel.utils.logger.info(
+                                "[%s] Client %s join refused due to wrong auth"
+                                % (self.__class__.__name__, self._client_id)
+                            )
+                            self.set_status(403, "Forbidden")
+                            return False
+
                 if self._client_id in this._clients:
                     turbo_tunnel.utils.logger.warn(
                         "[%s] Client %s already joined"
@@ -161,7 +190,7 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                 buffer += await stream.read()
             except turbo_tunnel.utils.TunnelClosedError:
                 turbo_tunnel.utils.logger.warn(
-                    "[%s] Client %s closed" % (self.__class__.__name__, client_id)
+                    "[%s] Client %s leaved" % (self.__class__.__name__, client_id)
                 )
                 self._clients.pop(client_id)
                 break
