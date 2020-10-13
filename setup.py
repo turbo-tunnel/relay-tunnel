@@ -4,12 +4,12 @@ import setuptools
 
 import relay_tunnel
 
-with open('README.md') as fp:
-    README = fp.read()
+with open('README.md', 'rb') as fp:
+    README = fp.read().decode()
 
 
-with open('requirements.txt') as fp:
-    text = fp.read()
+with open('requirements.txt', 'rb') as fp:
+    text = fp.read().decode()
     REQUIREMENTS = text.split('\n')
 
 
