@@ -117,7 +117,7 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                 self._client_id = client_id[0].decode()
                 auth_data = this._listen_url.auth
                 if auth_data:
-                    auth_data = auth_data.split(':')
+                    auth_data = auth_data.split(":")
                     for header in self.request.headers:
                         if header == "Proxy-Authorization":
                             value = self.request.headers[header]
@@ -177,7 +177,7 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
         handlers = [
             (self._listen_url.path, WebSocketRelayHandler),
         ]
-        self._app = tornado.web.Application(handlers)
+        self._app = tornado.web.Application(handlers, websocket_ping_interval=20)
 
     async def forward_stream(self, client_id):
         stream = self._clients.get(client_id)
