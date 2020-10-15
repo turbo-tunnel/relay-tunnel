@@ -208,7 +208,9 @@ class RelayTransport(object):
 
     async def create_stream(self, address):
         self._last_stream_id += 1
-        stream = RelayStream(self, self._last_stream_id, token=self._token)
+        stream = RelayStream(
+            self, self._last_stream_id, remote_id=self._remote_id, token=self._token
+        )
         if self._remote_id not in self._streams:
             self._streams[self._remote_id] = {}
         self._streams[self._remote_id][self._last_stream_id] = stream
@@ -380,10 +382,14 @@ class RelayStream(object):
             self._buffer += packet.data
             self._read_event.set()
         elif event == EnumStreamEvent.PING:
+            turbo_tunnel.utils.logger.info(
+                "[%s] Received PING from %s@%d"
+                % (self.__class__.__name__, self._remote_id, self._stream_id)
+            )
             await self.pong()
         elif event == EnumStreamEvent.PONG:
             turbo_tunnel.utils.logger.info(
-                "[%s] Received PING from %s@%d"
+                "[%s] Received PONG from %s@%d"
                 % (self.__class__.__name__, self._remote_id, self._stream_id)
             )
             if self._status == EnumStreamStatus.PINGING:
@@ -475,7 +481,7 @@ class RelayStream(object):
 
     async def ping(self):
         turbo_tunnel.utils.logger.info(
-            "[%s] Ping %s@%d"
+            "[%s] Send PING to %s@%d"
             % (self.__class__.__name__, self._remote_id, self._stream_id)
         )
         stream_packet = StreamPacket(self._stream_id, EnumStreamEvent.PING)
@@ -488,6 +494,9 @@ class RelayStream(object):
 
     async def keepalive_task(self):
         """keepalive"""
+        turbo_tunnel.utils.logger.info(
+            "[%s] Keep alive task started" % self.__class__.__name__
+        )
         while self._status != EnumStreamStatus.CLOSED:
             if time.time() - self._last_recv_time < self.__class__.KEEPALIVE_INTERVAL:
                 await asyncio.sleep(1)
@@ -505,6 +514,9 @@ class RelayStream(object):
                     )
                     continue
                 break
+        turbo_tunnel.utils.logger.info(
+            "[%s] Keep alive task exit" % self.__class__.__name__
+        )
 
     async def forward(self, tunn_conn):
         if not self._target_tunnel:
