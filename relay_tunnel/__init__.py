@@ -5,7 +5,7 @@
 
 import traceback
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 try:
     from . import websocket
