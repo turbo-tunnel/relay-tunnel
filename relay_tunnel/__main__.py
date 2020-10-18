@@ -48,6 +48,9 @@ def main():
         choices=("debug", "info", "warn", "error"),
         default="info",
     )
+    parser.add_argument(
+        "-d", "--daemon", help="run as daemon", action="store_true", default=False
+    )
     args = parser.parse_args()
 
     handler = logging.StreamHandler()
@@ -63,6 +66,14 @@ def main():
         turbo_tunnel.utils.logger.setLevel(logging.ERROR)
     turbo_tunnel.utils.logger.propagate = 0
     turbo_tunnel.utils.logger.addHandler(handler)
+
+    if sys.platform != "win32" and args.daemon:
+        import daemon
+
+        daemon.DaemonContext(stderr=open("error.txt", "w")).open()
+    elif args.daemon:
+        utils.win32_daemon()
+        return 0
 
     relay_url = turbo_tunnel.utils.Url(args.url)
     tunnel_urls = args.tunnel
