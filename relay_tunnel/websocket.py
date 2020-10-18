@@ -234,3 +234,5 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
 
 turbo_tunnel.registry.tunnel_registry.register("ws+relay", WebSocketRelayTunnel)
 turbo_tunnel.registry.server_registry.register("ws+relay", WebSocketRelayTunnelServer)
+turbo_tunnel.registry.tunnel_registry.register("wss+relay", WebSocketRelayTunnel)
+turbo_tunnel.registry.server_registry.register("wss+relay", WebSocketRelayTunnelServer)

@@ -550,3 +550,16 @@ def create_random_string(length=32, exclude=None):
             continue
         result += c
     return result
+
+def win32_daemon():
+    cmdline = []
+    for it in sys.argv:
+        if it not in ("-d", "--daemon"):
+            cmdline.append(it)
+
+    DETACHED_PROCESS = 8
+    subprocess.Popen(
+        cmdline,
+        creationflags=DETACHED_PROCESS,
+        close_fds=True
+    )
