@@ -58,8 +58,11 @@ class WebSocketRelayTunnel(turbo_tunnel.tunnel.Tunnel):
         return False
 
     async def connect(self):
-        if not self._connected and not await self._tunnel.connect():
-            return False
+        if not self._connected:
+            if not await self._tunnel.connect():
+                return False
+            else:
+                self._relay_transport.start_transport()
         self._connected = True
 
         if self._addr != self._url.host or self._port != self._url.port:
@@ -128,13 +131,13 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                                 == turbo_tunnel.auth.http_basic_auth(*auth_data)
                             ):
                                 break
-                        else:
-                            turbo_tunnel.utils.logger.info(
-                                "[%s] Client %s join refused due to wrong auth"
-                                % (self.__class__.__name__, self._client_id)
-                            )
-                            self.set_status(403, "Forbidden")
-                            return False
+                    else:
+                        turbo_tunnel.utils.logger.info(
+                            "[%s] Client %s join refused due to wrong auth"
+                            % (self.__class__.__name__, self._client_id)
+                        )
+                        self.set_status(403, "Forbidden")
+                        return False
 
                 if self._client_id in this._clients:
                     turbo_tunnel.utils.logger.warn(
