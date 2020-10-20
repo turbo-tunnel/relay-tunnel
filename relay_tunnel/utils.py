@@ -197,11 +197,13 @@ class RelayTransport(object):
         self._streams = {}
         self._last_stream_id = 0
         self._read_event = asyncio.Event()
-        asyncio.ensure_future(self.process_packet_task())
 
     @property
     def streams(self):
         return list(self._streams.values())
+
+    def start_transport(self):
+        asyncio.ensure_future(self.process_packet_task())
 
     def closed(self):
         return self._tunnel.closed()
