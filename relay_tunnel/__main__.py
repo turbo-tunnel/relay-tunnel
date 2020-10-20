@@ -28,7 +28,11 @@ async def create_relay_tunnel(tunnel_urls, relay_url, retry):
             relay_tunnel = websocket.WebSocketRelayTunnel(tunnel, relay_url)
         else:
             raise NotImplementedError(protocol)
-        await relay_tunnel.connect()
+        if not await relay_tunnel.connect():
+            turbo_tunnel.utils.logger.error(
+                "Connect relay tunnel %s failed" % relay_url
+            )
+            break
         turbo_tunnel.utils.logger.info("Relay tunnel connected, waiting for client...")
         await relay_tunnel.wait_until_closed()
         turbo_tunnel.utils.logger.warn("Relay tunnel closed, retry connecting...")
