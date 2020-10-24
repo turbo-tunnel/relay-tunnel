@@ -25,7 +25,6 @@ class HTTPTunnel(turbo_tunnel.tunnel.Tunnel):
         self._buffer = b""
         self._tunnel_pool = []
         self._read_event = asyncio.Event()
-        print("HTTPTunnel init", id(self))
 
     async def _get_tunnel(self):
         tunnel = None
