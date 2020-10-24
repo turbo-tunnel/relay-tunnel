@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import copy
 import random
 import struct
 import time
@@ -21,6 +22,20 @@ class StreamStatusError(RuntimeError):
 
 class StreamClosedError(RuntimeError):
     pass
+
+
+class HTTPResponseError(RuntimeError):
+    def __init__(self, code, message=None):
+        self._code = code
+        self._message = message
+
+    @property
+    def code(self):
+        return self._code
+
+    @property
+    def message(self):
+        return self._message
 
 
 class EnumStreamEvent(object):
@@ -544,6 +559,85 @@ class RelayStream(object):
         tunn_conn.on_close()
 
 
+class RelayTunnel(turbo_tunnel.tunnel.Tunnel):
+    """Relay Tunnel"""
+
+    outer_tunnel_class = None
+    transports = {}
+
+    def __init__(self, tunnel, url, address=None):
+        target_id = url.params.get("target_id")
+        client_id = url.params.get("client_id")
+        token = url.params.get("token")
+        url = copy.copy(url)
+        url.protocol = url.protocol.replace("+relay", "")
+        if not client_id:
+            client_id = utils.create_random_string(exclude="?&")
+            url.params["client_id"] = client_id
+
+        address = address or (None, None)
+        tunnel = self.outer_tunnel_class(tunnel, url, address)
+        super(RelayTunnel, self).__init__(tunnel, url, address)
+        if str(url) in self.__class__.transports:
+            self._relay_transport = self.__class__.transports[str(url)]
+            self._connected = True
+        else:
+            self._relay_transport = RelayTransport(
+                self._tunnel, client_id, target_id, token
+            )
+            self.__class__.transports[str(url)] = self._relay_transport
+            self._connected = False
+        self._stream = None
+
+    @classmethod
+    def has_cache(cls, url):
+        key = str(url).replace("+relay", "")
+        if key in cls.transports:
+            transport = cls.transports[key]
+            if transport.closed():
+                turbo_tunnel.utils.logger.warn(
+                    "[%s] Connection of %s closed, remove cache" % (cls.__name__, key)
+                )
+                cls.transports.pop(key)
+                return False
+            return True
+        return False
+
+    async def connect(self):
+        if not self._connected:
+            if not await self._tunnel.connect():
+                return False
+            else:
+                self._relay_transport.start_transport()
+        self._connected = True
+
+        if self._addr != self._url.host or self._port != self._url.port:
+            self._stream = await self._relay_transport.create_stream(
+                (self._addr, self._port)
+            )
+            return self._stream is not None
+        return True
+
+    async def read(self):
+        try:
+            return await self._stream.read()
+        except StreamClosedError:
+            raise turbo_tunnel.utils.TunnelClosedError()
+
+    async def write(self, buffer):
+        return await self._stream.write(buffer)
+
+    def close(self):
+        if self._stream:
+            self._stream.close()
+            self._stream = None
+
+    async def wait_until_closed(self):
+        while not self._relay_transport.closed():
+            await asyncio.sleep(1)
+        self.__class__.transports.pop(str(self._url))
+
+
 def create_random_string(length=32, exclude=None):
     result = ""
     while len(result) < length:
@@ -553,6 +647,7 @@ def create_random_string(length=32, exclude=None):
         result += c
     return result
 
+
 def win32_daemon():
     cmdline = []
     for it in sys.argv:
@@ -560,8 +655,4 @@ def win32_daemon():
             cmdline.append(it)
 
     DETACHED_PROCESS = 8
-    subprocess.Popen(
-        cmdline,
-        creationflags=DETACHED_PROCESS,
-        close_fds=True
-    )
+    subprocess.Popen(cmdline, creationflags=DETACHED_PROCESS, close_fds=True)
