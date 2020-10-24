@@ -8,6 +8,7 @@ import sys
 import tornado
 import turbo_tunnel
 
+from . import http
 from . import websocket
 
 
@@ -26,6 +27,8 @@ async def create_relay_tunnel(tunnel_urls, relay_url, retry):
         protocol = relay_url.protocol.replace("+relay", "")
         if protocol in ("ws", "wss"):
             relay_tunnel = websocket.WebSocketRelayTunnel(tunnel, relay_url)
+        elif protocol in ('http', 'https'):
+            relay_tunnel = http.HTTPRelayTunnel(tunnel, relay_url)
         else:
             raise NotImplementedError(protocol)
         if not await relay_tunnel.connect():
