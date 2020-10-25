@@ -299,7 +299,6 @@ class HTTPRelayTunnelServer(turbo_tunnel.server.TunnelServer):
             (self._listen_url.path, HTTPRelayHandler),
         ]
         self._app = tornado.web.Application(handlers)
-        turbo_tunnel.utils.AsyncTaskManager().start_task(self._check_client_task())
 
     async def _check_client_task(self):
         while True:
@@ -323,6 +322,7 @@ class HTTPRelayTunnelServer(turbo_tunnel.server.TunnelServer):
             "[%s] HTTP relay server is listening on %s:%d"
             % (self.__class__.__name__, self._listen_url.host, self._listen_url.port)
         )
+        turbo_tunnel.utils.AsyncTaskManager().start_task(self._check_client_task())
 
 
 turbo_tunnel.registry.tunnel_registry.register("http+relay", HTTPRelayTunnel)
