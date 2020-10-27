@@ -115,6 +115,11 @@ class HTTPTunnel(turbo_tunnel.tunnel.Tunnel):
         headers = headers or {}
         headers["Connection"] = "Keep-Alive"
         headers["Content-Type"] = "application/octet-stream"
+        auth_data = self._url.auth
+        if auth_data:
+            headers[
+                "Proxy-Authorization"
+            ] = "Basic %s" % turbo_tunnel.auth.http_basic_auth(*auth_data.split(":"))
         if self._access_key:
             headers["X-Access-Key"] = self._access_key
         body = body or b""
@@ -293,7 +298,6 @@ class HTTPRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                     if not timeout:
                         break
                     await asyncio.sleep(0.01)
-                # self.set_status(200, "Ok")
 
         handlers = [
             (self._listen_url.path, HTTPRelayHandler),
