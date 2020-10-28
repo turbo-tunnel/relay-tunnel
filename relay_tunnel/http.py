@@ -288,7 +288,8 @@ class HTTPRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                 time0 = time.time()
                 while not timeout or time.time() - time0 < timeout:
                     messages = this._clients[client_id]["messages"]
-                    for source in messages:
+                    keys = list(messages.keys())
+                    for source in keys:
                         buffer = messages.pop(source)
                         packet, buffer = utils.RelayPacket.parse(buffer)
                         messages[source] = buffer
