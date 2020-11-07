@@ -572,7 +572,7 @@ class RelayTunnel(turbo_tunnel.tunnel.Tunnel):
         url = copy.copy(url)
         url.protocol = url.protocol.replace("+relay", "")
         if not client_id:
-            client_id = utils.create_random_string(exclude="?&")
+            client_id = create_random_string(exclude="?&")
             url.params["client_id"] = client_id
 
         address = address or (None, None)

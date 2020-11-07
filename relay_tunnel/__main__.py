@@ -95,6 +95,11 @@ def main():
         )
     )
 
+    if sys.platform == 'win32' and sys.version_info[1] >= 8:
+        # on Windows, the default asyncio event loop is ProactorEventLoop from python3.8
+        loop = asyncio.SelectorEventLoop()
+        asyncio.set_event_loop(loop)
+
     try:
         tornado.ioloop.IOLoop.current().start()
     except KeyboardInterrupt:
