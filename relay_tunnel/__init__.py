@@ -5,10 +5,11 @@
 
 import traceback
 
-VERSION = "0.2.2"
+VERSION = "0.3.0"
 
 try:
     from . import http
+    from . import irc
     from . import websocket
 except ImportError:
     traceback.print_exc()
