@@ -9,6 +9,7 @@ import tornado
 import turbo_tunnel
 
 from . import http
+from . import irc
 from . import websocket
 
 
@@ -29,6 +30,8 @@ async def create_relay_tunnel(tunnel_urls, relay_url, retry):
             relay_tunnel = websocket.WebSocketRelayTunnel(tunnel, relay_url)
         elif protocol in ('http', 'https'):
             relay_tunnel = http.HTTPRelayTunnel(tunnel, relay_url)
+        elif protocol == 'irc':
+            relay_tunnel = irc.IRCRelayTunnel(tunnel, relay_url)
         else:
             raise NotImplementedError(protocol)
         if not await relay_tunnel.connect():
@@ -47,7 +50,7 @@ def main():
         prog="relay-tunnel", description="RelayTunnel cmdline tool."
     )
     parser.add_argument("-t", "--tunnel", action="append", help="tunnel url")
-    parser.add_argument("-u", "--url", help="relay url", required=True)
+    parser.add_argument("-s", "--server", help="relay server url", required=True)
     parser.add_argument("--retry", type=int, help="retry connect count", default=0)
     parser.add_argument(
         "--log-level",
@@ -82,7 +85,7 @@ def main():
         utils.win32_daemon()
         return 0
 
-    relay_url = turbo_tunnel.utils.Url(args.url)
+    relay_url = turbo_tunnel.utils.Url(args.server)
     tunnel_urls = args.tunnel
     if not tunnel_urls:
         tunnel_urls = ["tcp://"]
