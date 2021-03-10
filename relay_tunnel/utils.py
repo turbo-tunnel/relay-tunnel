@@ -5,9 +5,11 @@
 
 import asyncio
 import copy
+import hashlib
 import random
 import struct
 import time
+import zlib
 
 import turbo_tunnel
 
@@ -57,8 +59,16 @@ class EnumStreamStatus(object):
     PINGING = 5
 
 
+class EnumPacketFlag(object):
+    COMP_ZLIB = 1
+    ENCRY_XOR = 64
+    ENCRY_AES = 128
+
+
 class RelayPacket(object):
-    def __init__(self, sender, receiver, body):
+    flags = EnumPacketFlag.COMP_ZLIB
+
+    def __init__(self, sender, receiver, body, flags=0, key=None):
         self._sender = sender if isinstance(sender, bytes) else sender.encode()
         if len(self._sender) > 255:
             raise RuntimeError("Sender is too long")
@@ -66,7 +76,9 @@ class RelayPacket(object):
         if len(self._receiver) > 255:
             raise RuntimeError("Receiver is too long")
         assert isinstance(body, bytes)
+        self._flags = flags or self.__class__.flags
         self._body = body
+        self._key = key
 
     @property
     def sender(self):
@@ -81,17 +93,22 @@ class RelayPacket(object):
         return self._body
 
     def serialize(self):
-        total_size = (
-            4 + 1 + len(self._sender) + 1 + len(self._receiver) + len(self._body)
-        )
+        body = self._body
+        if self._flags & EnumPacketFlag.COMP_ZLIB:
+            body = zlib.compress(body)
+        if self._flags & EnumPacketFlag.ENCRY_XOR:
+            body = md5_xor(body, self._key)
+
+        total_size = 4 + 1 + 1 + len(self._sender) + 1 + len(self._receiver) + len(body)
         buffer = struct.pack("!I", total_size)
+        buffer += struct.pack("B", self._flags)
         buffer += struct.pack("B", len(self._sender)) + self._sender
         buffer += struct.pack("B", len(self._receiver)) + self._receiver
-        buffer += self._body
+        buffer += body
         return buffer
 
     @staticmethod
-    def parse(buffer):
+    def parse(buffer, key=None):
         assert isinstance(buffer, bytes)
         if len(buffer) < 4:
             return None, buffer
@@ -99,6 +116,8 @@ class RelayPacket(object):
         if len(buffer) < total_size:
             return None, buffer
         offset = 4
+        flags = struct.unpack("B", buffer[offset : offset + 1])[0]
+        offset += 1
         sender_size = struct.unpack("B", buffer[offset : offset + 1])[0]
         offset += 1
         sender = buffer[offset : offset + sender_size]
@@ -109,7 +128,14 @@ class RelayPacket(object):
         offset += receiver_size
         body = buffer[offset:total_size]
         buffer = buffer[total_size:]
-        return RelayPacket(sender, receiver, body), buffer
+
+        if flags & EnumPacketFlag.ENCRY_XOR:
+            assert isinstance(key, bytes)
+            body = md5_xor(body, key)
+        if flags & EnumPacketFlag.COMP_ZLIB:
+            body = zlib.decompress(body)
+
+        return RelayPacket(sender, receiver, body, flags, key), buffer
 
 
 class StreamPacket(object):
@@ -199,11 +225,13 @@ class StreamPacket(object):
         elif event in (EnumStreamEvent.PING, EnumStreamEvent.PONG):
             pass
         else:
-            raise NotImplementedError(event)
+            raise NotImplementedError("Unsupported event: %s" % event)
         return StreamPacket(stream_id, event, **params)
 
 
 class RelayTransport(object):
+    packet_flag = EnumPacketFlag.COMP_ZLIB & EnumPacketFlag.ENCRY_XOR
+
     def __init__(self, tunnel, local_id, remote_id=None, token=None):
         self._tunnel = tunnel
         self._local_id = local_id
@@ -225,7 +253,9 @@ class RelayTransport(object):
 
     async def create_stream(self, address):
         self._last_stream_id += 1
-        stream = RelayStream(self, self._last_stream_id, token=self._token)
+        stream = RelayStream(
+            self, self._last_stream_id, remote_id=self._remote_id, token=self._token
+        )
         if self._remote_id not in self._streams:
             self._streams[self._remote_id] = {}
         self._streams[self._remote_id][self._last_stream_id] = stream
@@ -237,17 +267,22 @@ class RelayTransport(object):
     async def send_packet(self, stream_packet, remote_id=None):
         remote_id = remote_id or self._remote_id
         assert remote_id is not None
-        relay_packet = RelayPacket(self._local_id, remote_id, stream_packet.serialize())
-        await self._tunnel.write(relay_packet.serialize())
+        relay_packet = RelayPacket(
+            self._local_id,
+            remote_id,
+            stream_packet.serialize(),
+            self.__class__.packet_flag,
+            self._token,
+        )
+        await self._tunnel.write_packet(relay_packet)
 
     async def read_from_tunnel(self):
-        return await self._tunnel.read()
+        return await self._tunnel.read_packet()
 
     async def process_packet_task(self):
-        buffer = b""
         while True:
             try:
-                buffer += await self.read_from_tunnel()
+                relay_packet = await self.read_from_tunnel()
             except turbo_tunnel.utils.TunnelClosedError:
                 assert self.closed()
                 turbo_tunnel.utils.logger.warn(
@@ -255,13 +290,8 @@ class RelayTransport(object):
                     % (self.__class__.__name__, self._tunnel)
                 )
                 break
-
-            while buffer:
-                prev_buffer = buffer
-                relay_packet, buffer = RelayPacket.parse(buffer)
-                if not relay_packet:
-                    break
-
+            else:
+                assert relay_packet is not None
                 assert self._remote_id is None or relay_packet.sender == self._remote_id
                 assert relay_packet.receiver == self._local_id
                 stream_packet = StreamPacket.parse(relay_packet.body)
@@ -292,9 +322,9 @@ class RelayTransport(object):
                         )
                     )
                     await asyncio.sleep(0.001)
-                    buffer = prev_buffer
                 else:
-                    self._read_event.set()
+                    await asyncio.sleep(0)
+                    # self._read_event.set()
 
     def close(self):
         for client_id in self._streams:
@@ -400,8 +430,8 @@ class RelayStream(object):
             await self.pong()
         elif event == EnumStreamEvent.PONG:
             turbo_tunnel.utils.logger.info(
-                "[%s] Received PING from %s@%d"
-                % (self.__class__.__name__, self._remote_id, self._stream_id)
+                "[%s] Received PING from %d@%s"
+                % (self.__class__.__name__, self._stream_id, self._remote_id)
             )
             if self._status == EnumStreamStatus.PINGING:
                 self._status = EnumStreamStatus.ESTABLISHED
@@ -461,8 +491,8 @@ class RelayStream(object):
         )
         self._status = EnumStreamStatus.CLOSED
         turbo_tunnel.utils.logger.info(
-            "[%s] Stream %s@%d closed"
-            % (self.__class__.__name__, self._remote_id, self._stream_id)
+            "[%s] Stream %d@%s closed"
+            % (self.__class__.__name__, self._stream_id, self._remote_id)
         )
 
     async def connect_server(self, target_address, source_address):
@@ -541,7 +571,7 @@ class RelayStream(object):
 
         async def _forward_to_downstream():
             assert self._remote_id is not None
-            while True:
+            while self._target_tunnel:
                 try:
                     buffer = await self._target_tunnel.read()
                 except turbo_tunnel.utils.TunnelClosedError:
@@ -562,7 +592,8 @@ class RelayStream(object):
 class RelayTunnel(turbo_tunnel.tunnel.Tunnel):
     """Relay Tunnel"""
 
-    outer_tunnel_class = None
+    underlay_tunnel_class = None
+    underlay_tunnels = {}
     transports = {}
 
     def __init__(self, tunnel, url, address=None):
@@ -572,11 +603,15 @@ class RelayTunnel(turbo_tunnel.tunnel.Tunnel):
         url = copy.copy(url)
         url.protocol = url.protocol.replace("+relay", "")
         if not client_id:
-            client_id = create_random_string(exclude="?&")
+            client_id = create_random_string()
             url.params["client_id"] = client_id
 
         address = address or (None, None)
-        tunnel = self.outer_tunnel_class(tunnel, url, address)
+        key = "%s://%s:%d%s" % (url.protocol, url.host, url.port, url.path)
+        if key in self.__class__.underlay_tunnels:
+            tunnel = self.__class__.underlay_tunnels[key]
+        else:
+            tunnel = self.underlay_tunnel_class(tunnel, url, address)
         super(RelayTunnel, self).__init__(tunnel, url, address)
         if str(url) in self.__class__.transports:
             self._relay_transport = self.__class__.transports[str(url)]
@@ -591,14 +626,19 @@ class RelayTunnel(turbo_tunnel.tunnel.Tunnel):
 
     @classmethod
     def has_cache(cls, url):
-        key = str(url).replace("+relay", "")
-        if key in cls.transports:
-            transport = cls.transports[key]
-            if transport.closed():
+        key = "%s://%s:%d%s" % (
+            url.protocol.replace("+relay", ""),
+            url.host,
+            url.port,
+            url.path,
+        )
+        if key in cls.underlay_tunnels:
+            underlay_tunnel = cls.underlay_tunnels[key]
+            if underlay_tunnel.closed():
                 turbo_tunnel.utils.logger.warn(
                     "[%s] Connection of %s closed, remove cache" % (cls.__name__, key)
                 )
-                cls.transports.pop(key)
+                cls.underlay_tunnels.pop(key)
                 return False
             return True
         return False
@@ -638,13 +678,13 @@ class RelayTunnel(turbo_tunnel.tunnel.Tunnel):
         self.__class__.transports.pop(str(self._url))
 
 
-def create_random_string(length=32, exclude=None):
+def create_random_string(length=32):
     result = ""
     while len(result) < length:
-        c = chr(random.randint(48, 122))
-        if exclude and c in exclude:
+        n = random.randint(48, 122)
+        if n > 57 and n < 65 or n > 90 and n < 97:
             continue
-        result += c
+        result += chr(n)
     return result
 
 
@@ -656,3 +696,14 @@ def win32_daemon():
 
     DETACHED_PROCESS = 8
     subprocess.Popen(cmdline, creationflags=DETACHED_PROCESS, close_fds=True)
+
+
+def md5_xor(buffer, key):
+    m = hashlib.md5()
+    m.update(key)
+    key = m.digest()
+    output = b""
+    index = 0
+    for i, c in enumerate(buffer):
+        output += bytes([c ^ key[i % len(key)]])
+    return output
