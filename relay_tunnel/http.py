@@ -21,6 +21,7 @@ class HTTPTunnel(turbo_tunnel.tunnel.Tunnel):
 
     def __init__(self, tunnel, url, address=None):
         super(HTTPTunnel, self).__init__(tunnel, url, address)
+        self._token = self._url.params.get("token")
         self._access_key = None
         self._buffer = b""
         self._tunnel_pool = []
@@ -164,18 +165,19 @@ class HTTPTunnel(turbo_tunnel.tunnel.Tunnel):
                 self._buffer += buffer
                 self._read_event.set()
 
-    async def write(self, buffer):
-        packet, _ = utils.RelayPacket.parse(buffer)
+    async def write_packet(self, packet):
+        buffer = packet.serialize()
         await self.retry_post_request(
             params={"target_id": packet.receiver}, body=buffer
         )
 
-    async def read(self):
+    async def read_packet(self):
         while True:
             if self._buffer:
-                buffer = self._buffer
-                self._buffer = b""
-                return buffer
+                packet, self._buffer = utils.RelayPacket.parse(self._buffer, self._token)
+                if packet:
+                    return packet
+
             await self._read_event.wait()
             self._read_event.clear()
 
@@ -186,7 +188,7 @@ class HTTPTunnel(turbo_tunnel.tunnel.Tunnel):
 class HTTPRelayTunnel(utils.RelayTunnel):
     """HTTP Relay Tunnel"""
 
-    outer_tunnel_class = HTTPTunnel
+    underlay_tunnel_class = HTTPTunnel
 
 
 class HTTPRelayTunnelServer(turbo_tunnel.server.TunnelServer):
@@ -237,7 +239,7 @@ class HTTPRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                         return False
 
                 if client_id not in this._clients:
-                    access_key = utils.create_random_string(exclude="`\"'\\")
+                    access_key = utils.create_random_string()
                     this._clients[client_id] = {
                         "access_key": access_key,
                         "messages": {},

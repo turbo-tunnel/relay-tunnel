@@ -13,83 +13,32 @@ import turbo_tunnel
 from . import utils
 
 
-class WebSocketRelayTunnel(turbo_tunnel.tunnel.Tunnel):
-    """WebSocket Relay Tunnel"""
-
-    transports = {}
+class WebSocketTunnel(turbo_tunnel.websocket.WebSocketTunnel):
+    """WebSocket Tunnel"""
 
     def __init__(self, tunnel, url, address=None):
-        target_id = url.params.get("target_id")
-        client_id = url.params.get("client_id")
-        token = url.params.get("token")
-        url = copy.copy(url)
-        url.protocol = url.protocol.replace("+relay", "")
-        if not client_id:
-            client_id = utils.create_random_string(exclude="?&")
-            url.params["client_id"] = client_id
+        super(WebSocketTunnel, self).__init__(tunnel, url, address)
+        self._token = self._url.params.get("token")
+        self._buffer = b""
 
-        address = address or (None, None)
-        tunnel = turbo_tunnel.websocket.WebSocketTunnel(tunnel, url, address)
-        super(WebSocketRelayTunnel, self).__init__(tunnel, url, address)
-        if str(url) in self.__class__.transports:
-            self._relay_transport = self.__class__.transports[str(url)]
-            self._connected = True
-        else:
-            self._relay_transport = utils.RelayTransport(
-                self._tunnel, client_id, target_id, token
-            )
-            self.__class__.transports[str(url)] = self._relay_transport
-            self._connected = False
-        self._stream = None
+    async def read_packet(self):
+        import struct
+        while True:
+            if self._buffer:
+                packet, self._buffer = utils.RelayPacket.parse(self._buffer, self._token)
+                if packet:
+                    return packet
+            self._buffer += await self.read()
 
-    @classmethod
-    def has_cache(cls, url):
-        key = str(url).replace("+relay", "")
-        if key in cls.transports:
-            transport = cls.transports[key]
-            if transport.closed():
-                turbo_tunnel.utils.logger.warn(
-                    "[%s] WebSocket connection %s closed, remove cache"
-                    % (cls.__name__, key)
-                )
-                cls.transports.pop(key)
-                return False
-            return True
-        return False
+    async def write_packet(self, packet):
+        buffer = packet.serialize()
+        return await self.write(buffer)
 
-    async def connect(self):
-        if not self._connected:
-            if not await self._tunnel.connect():
-                return False
-            else:
-                self._relay_transport.start_transport()
-        self._connected = True
 
-        if self._addr != self._url.host or self._port != self._url.port:
-            self._stream = await self._relay_transport.create_stream(
-                (self._addr, self._port)
-            )
-            return self._stream is not None
-        return True
+class WebSocketRelayTunnel(utils.RelayTunnel):
+    """WebSocket Relay Tunnel"""
 
-    async def read(self):
-        try:
-            return await self._stream.read()
-        except utils.StreamClosedError:
-            raise turbo_tunnel.utils.TunnelClosedError()
-
-    async def write(self, buffer):
-        return await self._stream.write(buffer)
-
-    def close(self):
-        if self._stream:
-            self._stream.close()
-            self._stream = None
-
-    async def wait_until_closed(self):
-        while not self._relay_transport.closed():
-            await asyncio.sleep(1)
-        self.__class__.transports.pop(str(self._url))
+    underlay_tunnel_class = WebSocketTunnel
 
 
 class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
