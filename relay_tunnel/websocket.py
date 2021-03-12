@@ -22,10 +22,11 @@ class WebSocketTunnel(turbo_tunnel.websocket.WebSocketTunnel):
         self._buffer = b""
 
     async def read_packet(self):
-        import struct
         while True:
             if self._buffer:
-                packet, self._buffer = utils.RelayPacket.parse(self._buffer, self._token)
+                packet, self._buffer = utils.RelayPacket.parse(
+                    self._buffer, self._token
+                )
                 if packet:
                     return packet
             self._buffer += await self.read()
@@ -120,11 +121,17 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                     return WebSocketProtocol(self, mask_outgoing=True, params=params)
 
             async def on_message(self, message):
+                turbo_tunnel.utils.logger.debug(
+                    "[%s] Recv %d bytes from %s"
+                    % (self.__class__.__name__, len(message), self._client_id)
+                )
                 this._clients[self._client_id].on_recv(message)
 
             def on_connection_close(self):
                 super(WebSocketRelayHandler, self).on_connection_close()
-                this._clients[self._client_id].close()
+                stream = this._clients.get(self._client_id)
+                if stream:
+                    stream.close()
 
         handlers = [
             (self._listen_url.path, WebSocketRelayHandler),
@@ -164,7 +171,14 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                         "[%s] Invalid receiver: %s"
                         % (self.__class__.__name__, packet.receiver)
                     )
-                    # TODO: Send Fail
+                    stream_packet = utils.StreamPacket.parse(packet.body)
+                    stream_packet = utils.StreamPacket(
+                        stream_packet.stream_id, utils.EnumStreamEvent.CLOSE
+                    )
+                    relay_packet = utils.RelayPacket(
+                        packet.receiver, client_id, stream_packet.serialize()
+                    )
+                    await stream.write(relay_packet.serialize())
                     continue
 
                 try:
