@@ -8,6 +8,8 @@ import copy
 import hashlib
 import random
 import struct
+import subprocess
+import sys
 import time
 import zlib
 
@@ -151,6 +153,14 @@ class StreamPacket(object):
     @property
     def event(self):
         return self._event
+
+    def __str__(self):
+        return "<%s object id=%s event=%s at 0x%.8x>" % (
+            self.__class__.__name__,
+            self._stream_id,
+            self._event.decode(),
+            id(self),
+        )
 
     def __getattr__(self, attr):
         if attr in self._params:
@@ -370,7 +380,10 @@ class RelayStream(object):
         event = packet.event
         self._last_recv_time = time.time()
         if event == EnumStreamEvent.OPEN:
-            assert self._status == EnumStreamStatus.UNINITIALIZED
+            assert self._status in (
+                EnumStreamStatus.UNINITIALIZED,
+                EnumStreamStatus.CLOSED,
+            )
             assert self._remote_id is not None
 
             token = packet.token
@@ -400,9 +413,7 @@ class RelayStream(object):
                     )
                     self._status = EnumStreamStatus.CLOSING
                     stream_packet = StreamPacket(
-                        self._stream_id,
-                        EnumStreamEvent.FAIL,
-                        reason=reason,
+                        self._stream_id, EnumStreamEvent.FAIL, reason=reason,
                     )
             else:
                 turbo_tunnel.utils.logger.warn(
@@ -508,12 +519,7 @@ class RelayStream(object):
         except turbo_tunnel.utils.TunnelError as e:
             turbo_tunnel.utils.logger.warn(
                 "[%s] Connect %s:%d failed: %s"
-                % (
-                    self.__class__.__name__,
-                    target_address[0],
-                    target_address[1],
-                    e,
-                )
+                % (self.__class__.__name__, target_address[0], target_address[1], e,)
             )
             tun_conn.on_downstream_closed()
             return tun_conn, None
@@ -611,7 +617,7 @@ class RelayTunnel(turbo_tunnel.tunnel.Tunnel):
         if key in self.__class__.underlay_tunnels:
             tunnel = self.__class__.underlay_tunnels[key]
         else:
-            tunnel = self.underlay_tunnel_class(tunnel, url, address)
+            tunnel = self.__class__.underlay_tunnel_class(tunnel, url, address)
         super(RelayTunnel, self).__init__(tunnel, url, address)
         if str(url) in self.__class__.transports:
             self._relay_transport = self.__class__.transports[str(url)]
@@ -703,7 +709,6 @@ def md5_xor(buffer, key):
     m.update(key)
     key = m.digest()
     output = b""
-    index = 0
     for i, c in enumerate(buffer):
         output += bytes([c ^ key[i % len(key)]])
     return output
