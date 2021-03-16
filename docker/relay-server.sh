@@ -11,8 +11,8 @@ case $i in
     DOMAIN="${i#*=}"
     shift # past argument=value
     ;;
-    --default)
-    DEFAULT=YES
+    --log-level=*)
+    LOG_LEVEL="${i#*=}"
     shift # past argument with no value
     ;;
     *)
@@ -32,6 +32,6 @@ if [ ! -f "/etc/nginx/ssl/default.key" ]; then
   rm server.csr
 fi
 
-turbo-tunnel -l ws+relay://127.0.0.1:8080/relay/ -p relay_tunnel "$@" &
+turbo-tunnel -l ws+relay://127.0.0.1:8080/relay/ -p relay_tunnel --log-level ${LOG_LEVEL:-info} &
 
 nginx -g 'daemon off;'
