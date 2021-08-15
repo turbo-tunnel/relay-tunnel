@@ -10,6 +10,7 @@ import turbo_tunnel
 
 from . import http
 from . import irc
+from . import utils
 from . import websocket
 
 

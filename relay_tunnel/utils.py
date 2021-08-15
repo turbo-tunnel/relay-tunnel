@@ -701,7 +701,11 @@ def win32_daemon():
             cmdline.append(it)
 
     DETACHED_PROCESS = 8
-    subprocess.Popen(cmdline, creationflags=DETACHED_PROCESS, close_fds=True)
+    try:
+        subprocess.Popen(cmdline, creationflags=DETACHED_PROCESS, close_fds=True)
+    except Exception as ex:
+        turbo_tunnel.utils.logger.exception("Run cmdline %s failed" % cmdline)
+        raise ex
 
 
 def md5_xor(buffer, key):
