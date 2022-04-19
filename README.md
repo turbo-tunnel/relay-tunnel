@@ -42,7 +42,7 @@ $ relay-tunnel -s "ws://10.0.0.1:8080/relay/?client_id=${node_id}"
 * 客户端
 
 ```bash
-$ turbo-tunnel -l tcp://127.0.0.1:7777 -t "ws+replay://10.0.0.1:8080/relay/?client_id=${node_id}&target_id=${target_id}" -t tcp://private.com:80
+$ turbo-tunnel -l tcp://127.0.0.1:7777 -t "ws+relay://10.0.0.1:8080/relay/?client_id=${node_id}&target_id=${target_id}" -t tcp://private.com:80
 ```
 
 这条命令表示将中继节点所在网络中的`private.com:80`服务映射到本地的`127.0.0.1:7777`地址。
