@@ -154,6 +154,10 @@ class StreamPacket(object):
     def event(self):
         return self._event
 
+    @property
+    def params(self):
+        return self._params
+
     def __str__(self):
         return "<%s object id=%s event=%s at 0x%.8x>" % (
             self.__class__.__name__,
@@ -316,7 +320,7 @@ class RelayTransport(object):
                         token=self._token,
                     )
                     turbo_tunnel.utils.logger.info(
-                        "[%s] New stream %s@%s received"
+                        "[%s] New stream %s:%s created"
                         % (self.__class__.__name__, relay_packet.sender, stream_id)
                     )
                 if not await self._streams[relay_packet.sender][
@@ -413,7 +417,9 @@ class RelayStream(object):
                     )
                     self._status = EnumStreamStatus.CLOSING
                     stream_packet = StreamPacket(
-                        self._stream_id, EnumStreamEvent.FAIL, reason=reason,
+                        self._stream_id,
+                        EnumStreamEvent.FAIL,
+                        reason=reason,
                     )
             else:
                 turbo_tunnel.utils.logger.warn(
@@ -441,8 +447,8 @@ class RelayStream(object):
             await self.pong()
         elif event == EnumStreamEvent.PONG:
             turbo_tunnel.utils.logger.info(
-                "[%s] Received PING from %d@%s"
-                % (self.__class__.__name__, self._stream_id, self._remote_id)
+                "[%s][%s:%d] Received PING event"
+                % (self.__class__.__name__, self._remote_id, self._stream_id)
             )
             if self._status == EnumStreamStatus.PINGING:
                 self._status = EnumStreamStatus.ESTABLISHED
@@ -452,8 +458,13 @@ class RelayStream(object):
             self._status = EnumStreamStatus.CLOSED
             if self._target_tunnel:
                 turbo_tunnel.utils.logger.info(
-                    "[%s] Close tunnel %s"
-                    % (self.__class__.__name__, self._target_tunnel)
+                    "[%s][%s:%d] Received CLOSE event, close tunnel %s"
+                    % (
+                        self.__class__.__name__,
+                        self._remote_id,
+                        self._stream_id,
+                        self._target_tunnel,
+                    )
                 )
                 self._target_tunnel.close()
                 self._target_tunnel = None
@@ -502,8 +513,8 @@ class RelayStream(object):
         )
         self._status = EnumStreamStatus.CLOSED
         turbo_tunnel.utils.logger.info(
-            "[%s] Stream %d@%s closed"
-            % (self.__class__.__name__, self._stream_id, self._remote_id)
+            "[%s] Stream %s:%d closed"
+            % (self.__class__.__name__, self._remote_id, self._stream_id)
         )
 
     async def connect_server(self, target_address, source_address):
@@ -519,7 +530,12 @@ class RelayStream(object):
         except turbo_tunnel.utils.TunnelError as e:
             turbo_tunnel.utils.logger.warn(
                 "[%s] Connect %s:%d failed: %s"
-                % (self.__class__.__name__, target_address[0], target_address[1], e,)
+                % (
+                    self.__class__.__name__,
+                    target_address[0],
+                    target_address[1],
+                    e,
+                )
             )
             tun_conn.on_downstream_closed()
             return tun_conn, None
@@ -528,7 +544,7 @@ class RelayStream(object):
 
     async def ping(self):
         turbo_tunnel.utils.logger.info(
-            "[%s] Ping %s@%d"
+            "[%s] Ping %s:%d"
             % (self.__class__.__name__, self._remote_id, self._stream_id)
         )
         stream_packet = StreamPacket(self._stream_id, EnumStreamEvent.PING)

@@ -96,9 +96,9 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                     )
                     self.set_status(400, "Bad Request")
                     return False
-                this._clients[
-                    self._client_id
-                ] = turbo_tunnel.websocket.WebSocketDownStream(self)
+                this._clients[self._client_id] = (
+                    turbo_tunnel.websocket.WebSocketDownStream(self)
+                )
                 turbo_tunnel.utils.AsyncTaskManager().start_task(
                     this.forward_stream(self._client_id)
                 )
@@ -181,8 +181,48 @@ class WebSocketRelayTunnelServer(turbo_tunnel.server.TunnelServer):
                     await stream.write(relay_packet.serialize())
                     continue
 
+                data = packet.serialize()
+                stream_packet = utils.StreamPacket.parse(packet.body)
+                if stream_packet.event == utils.EnumStreamEvent.OPEN:
+                    turbo_tunnel.utils.logger.info(
+                        "[%s][%s][%s] Create new stream [%d] to %s:%d"
+                        % (
+                            self.__class__.__name__,
+                            client_id,
+                            packet.receiver,
+                            stream_packet.stream_id,
+                            stream_packet.params["addr"],
+                            stream_packet.params["port"],
+                        )
+                    )
+                elif stream_packet.event == utils.EnumStreamEvent.CLOSE:
+                    turbo_tunnel.utils.logger.info(
+                        "[%s][%s][%s] Close stream %d"
+                        % (
+                            self.__class__.__name__,
+                            client_id,
+                            packet.receiver,
+                            stream_packet.stream_id,
+                        )
+                    )
+                elif stream_packet.event == utils.EnumStreamEvent.FAIL:
+                    turbo_tunnel.utils.logger.warn(
+                        "[%s][%s][%s] Create stream failed"
+                        % (self.__class__.__name__, client_id, packet.receiver)
+                    )
+                elif stream_packet.event == utils.EnumStreamEvent.WRITE:
+                    turbo_tunnel.utils.logger.debug(
+                        "[%s][%s][%s] %d bytes forwarded"
+                        % (
+                            self.__class__.__name__,
+                            client_id,
+                            packet.receiver,
+                            len(data),
+                        )
+                    )
+
                 try:
-                    await self._clients[packet.receiver].write(packet.serialize())
+                    await self._clients[packet.receiver].write(data)
                 except turbo_tunnel.utils.TunnelClosedError:
                     turbo_tunnel.utils.logger.warn(
                         "[%s] Client %s closed"
