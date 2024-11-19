@@ -607,7 +607,7 @@ class RelayStream(object):
             turbo_tunnel.utils.AsyncTaskManager().wrap_task(_forward_to_upstream()),
             turbo_tunnel.utils.AsyncTaskManager().wrap_task(_forward_to_downstream()),
         ]
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        await turbo_tunnel.utils.wait_for_tasks(tasks, return_when=asyncio.FIRST_COMPLETED)
         tunn_conn.on_close()
 
 
